@@ -31,6 +31,11 @@ object - every placed model, no streaming.
 
 ![Whole city](screenshots/city.png)
 
+The same engine running the game itself in a race, with the HUD: clock, position, the zone
+and turbo/nitro arcs, tachometer, speedometer and mini-map.
+
+![In a race](screenshots/race.png)
+
 ## Run
 
 Copy `rscview.exe` into the game's data folder - the disc contents, `ASSETS.DAT` and the
