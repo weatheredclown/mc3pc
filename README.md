@@ -57,7 +57,15 @@ commands apply. An explicit `-path` always wins over the search above, and `-arc
 single object - every placed model, no streaming. `-citydist N` sets how far it draws.
 
 The `view*.bat` launchers (`viewcar`, `viewambient`, `viewcity`, `viewcityall`, `viewped`)
-wrap the loose form. They take the data from `RSCVIEW_ASSETS`, else `.\assets_unpacked`.
+run `bin\rscview.exe` from any directory. They take the game data from `RSCVIEW_ASSETS` (the
+folder holding `ASSETS.DAT`, or a loose asset tree), else `assets_unpacked\` or `assets\` next
+to the scripts, else `bin\`, else the current directory, and say what to set when they find
+none:
+
+```
+set RSCVIEW_ASSETS=D:\MC3
+viewcar vp_lancer_04
+```
 
 ### Controls
 
