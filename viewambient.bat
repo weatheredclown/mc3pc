@@ -1,6 +1,6 @@
 @echo off
 setlocal enabledelayedexpansion
-if not defined RSCVIEW_ASSETS if exist "%~dp0assets_unpacked" set "RSCVIEW_ASSETS=%~dp0assets_unpacked"
+call "%~dp0viewenv.bat" || exit /b 1
 rem viewambient.bat [vehicle] [bodycolor] [rscview args]
 rem   Renders one MC3 ambient (traffic) vehicle with rscview -ambient: the loose
 rem   <assets>\vehicle\va_*\va_*.type loaded and drawn the way the game's
@@ -64,11 +64,11 @@ shift
 goto collect
 
 :run_default
-set "CMD=bin\rscview.exe -path %RSCVIEW_ASSETS% %RES% -ambient %VEH%"
+set "CMD="%RSCVIEW%" %PATHARG% %RES% -ambient %VEH%"
 goto exec
 
 :run
-set "CMD=bin\rscview.exe -path %RSCVIEW_ASSETS% %RES% -ambient %VEH%"
+set "CMD="%RSCVIEW%" %PATHARG% %RES% -ambient %VEH%"
 if defined COLOR set "CMD=!CMD! -bodycolor %COLOR%"
 if defined ARGS set "CMD=!CMD! !ARGS!"
 

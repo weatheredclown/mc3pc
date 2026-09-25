@@ -1,6 +1,6 @@
 @echo off
-setlocal
-if not defined RSCVIEW_ASSETS if exist "%~dp0assets_unpacked" set "RSCVIEW_ASSETS=%~dp0assets_unpacked"
+setlocal enabledelayedexpansion
+call "%~dp0viewenv.bat" || exit /b 1
 rem viewcity.bat [city] [rscview args]
 rem   Interactive city model browser for Midnight Club 3:
 rem     viewcity.bat sandiego
@@ -19,14 +19,18 @@ rem     L                : Toggle lighting / unlit
 rem     Mouse Left Drag  : Orbit camera
 rem     Mouse Wheel      : Zoom in / out
 
-set HERE=%~dp0
 set "CITY=sandiego"
-if not "%~1"=="" (
-    set "ARG1=%~1"
-    if not "!ARG1:~0,1!"=="-" (
-        set "CITY=%~1"
-        shift
-    )
+set "FIRST=%~1"
+if defined FIRST if not "!FIRST:~0,1!"=="-" (
+    set "CITY=%~1"
+    shift
 )
+set "ARGS="
+:collect
+if "%~1"=="" goto run
+set "ARGS=!ARGS! %1"
+shift
+goto collect
 
-"%HERE%bin\rscview.exe" -path "%RSCVIEW_ASSETS%" -city %CITY% %*
+:run
+"%RSCVIEW%" %PATHARG% -city %CITY% !ARGS!

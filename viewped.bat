@@ -1,6 +1,6 @@
 @echo off
 setlocal enabledelayedexpansion
-if not defined RSCVIEW_ASSETS if exist "%~dp0assets_unpacked" set "RSCVIEW_ASSETS=%~dp0assets_unpacked"
+call "%~dp0viewenv.bat" || exit /b 1
 rem viewped.bat [ped] [animation] [rscview args]
 rem   Renders one MC3 city pedestrian playing an animation: the resource viewer's
 rem   orbit camera around testanim's playback loop.  The ped's model and skeleton
@@ -37,7 +37,7 @@ for %%a in (%*) do (
 
 rem "viewped list" prints the city's peds and their clips without opening a window.
 if /i "%~1"=="list" (
-    bin\rscview.exe -path %RSCVIEW_ASSETS% -ped -nogfx -list %2 %3 %4 %5
+    "%RSCVIEW%" %PATHARG% -ped -nogfx -list %2 %3 %4 %5
     exit /b %ERRORLEVEL%
 )
 
@@ -66,7 +66,7 @@ shift
 goto collect
 
 :run
-set "CMD=bin\rscview.exe -path %RSCVIEW_ASSETS% %RES% -ped"
+set "CMD="%RSCVIEW%" %PATHARG% %RES% -ped"
 if defined PED  set "CMD=!CMD! !PED!"
 if not defined PED set "CMD=!CMD! 0"
 if defined ANIM set "CMD=!CMD! -anim !ANIM!"
