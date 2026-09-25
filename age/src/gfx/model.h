@@ -239,6 +239,10 @@ struct gfxModelMaterial {
     bool car_metallic = false;
     bool car_emissive = false;
     bool car_glass = false;
+    // Glass opacity is car_color's alpha face-on, rising by this much at grazing
+    // angles (fresnel).  Windows use the original drwShaderCarWindows range
+    // (WinFresnelMin 0.2 .. WinFresnelMax 0.9); light lenses keep 0.45.
+    float car_glass_fres = 0.45f;
     bool car_chrome = false;
     bool car_cutout = false;
     // Which of the car's lights drives this lens.  MC3's light shaders

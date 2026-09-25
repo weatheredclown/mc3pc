@@ -112,6 +112,8 @@ static int  sSceneDrawsThisFrame = 0;           // 3D submissions this frame (0 
 static bool sShotLoadDone = false;              // -shotload: capture one loading frame
 static ID3D11Texture2D *sBackCopyTex = NULL;    // its D3D resource (CopyResource target)
 static gfxTexture *sBoundTex2 = NULL;   // stage 2; white (no-op modulate) when NULL
+static vglCarShadeParams sCarShade;     // vglSetCarShade: per-pixel car bodywork
+static bool sCarShadeOn = false;
 // gfxRenderState::SetTextureAlphaBlendAllowed: false while the caller has picked an
 // opaque (ONE/ZERO) blend set; the draw-time texture-alpha overrides must then leave the
 // blend and depth state alone (city ground/main passes: sidewalk alpha is a reflection mask).
@@ -196,11 +198,15 @@ static const char *kShader =
     "cbuffer CB : register(b0){ row_major float4x4 gMVP; float4 gAlphaTest;"
     "  row_major float4x4 gWV; float4 gFogParams; float4 gFogColor; float4 gFogMisc;"
     "  row_major float4x4 gWorld; float4 gLightMisc; float4 gAmbient; float4 gLightDir[3]; float4 gLightCol[3];"
-    "  float4 gTexMisc; row_major float4x4 gTexMtx; float4 gTexGen; row_major float4x4 gTexMtx2; };"  // gTexMisc x,y: UV set for stage 0/1; z: stage-2 colour op; gTexGen.w: stage-2 alpha op
+    "  float4 gTexMisc; row_major float4x4 gTexMtx; float4 gTexGen; row_major float4x4 gTexMtx2;"  // gTexMisc x,y: UV set for stage 0/1; z: stage-2 colour op; gTexGen.w: stage-2 alpha op
+    // Per-pixel car bodywork (vglSetCarShade / vglCarShadeParams): gCarMisc.x enables it.
+    "  float4 gCarMisc; float4 gCarBase; float4 gCarCam; float4 gCarKey; float4 gCarMisc2;"
+    "  float4 gCarSpecDir[3]; float4 gCarSpecCol[3]; float4 gCarRamp[8]; float4 gCarGlass; };"
     "struct VSIn{ float3 pos:POSITION; float4 col:COLOR; float2 tex:TEXCOORD0; "
     "float2 tex2:TEXCOORD1; float3 nrm:NORMAL; };"
     "struct VSOut{ float4 pos:SV_POSITION; float4 col:COLOR; float2 "
-    "tex:TEXCOORD0; float2 tex2:TEXCOORD1; float vz:TEXCOORD2; };"
+    "tex:TEXCOORD0; float2 tex2:TEXCOORD1; float vz:TEXCOORD2; "
+    "float3 wp:TEXCOORD3; float3 wn:TEXCOORD4; float3 vp:TEXCOORD5; float3 vn:TEXCOORD6; };"
     // Vertex lighting (PS2 rv1 style): ambient + up to 3 directional/point lights,
     // modulating the vertex colour.  gLightMisc.x enables it (RSTATE lighting on
     // and a light group bound); gLightDir[i].w: 1 = directional (xyz = direction
@@ -211,6 +217,8 @@ static const char *kShader =
     // fixed-function environment-map modes gfxModel::DrawEnvMapped relies on.
     "VSOut VS(VSIn i){ VSOut o; o.pos=mul(float4(i.pos,1),gMVP); o.col=i.col; "
     "o.tex=i.tex; o.tex2=i.tex2; float4 vp = mul(float4(i.pos,1),gWV); o.vz=abs(vp.z);"
+    "  o.wp = mul(float4(i.pos,1),gWorld).xyz; o.wn = mul(float4(i.nrm,0),gWorld).xyz;"
+    "  o.vp = vp.xyz; o.vn = mul(float4(i.nrm,0),gWV).xyz;"
     "  if (gTexGen.y == 1.0) o.tex2 = mul(float4(i.tex2,1.0,0.0), gTexMtx2).xy;"
     "  else if (gTexGen.y >= 2.0){"
     "    float3 nv2 = normalize(mul(float4(i.nrm,0),gWV).xyz);"
@@ -247,13 +255,57 @@ static const char *kShader =
     // GS modulate: vertex colour is a byte clamped at 0xFF, i.e. min(col *
     // scale, scale) with scale = 255/128 on textured draws (gTexMisc.w).
     "  float4 vc = i.col;"
+    // Per-pixel car bodywork: sCarShade (gfx/model.cpp) for opaque paint / trim with
+    // the live environment map on stage 2.  The vertex colour brings only the baked
+    // occlusion; the lit colour replaces it and the fresnel-weighted reflectivity goes
+    // to its alpha, which tex2colAddByVertexAlpha adds the environment by.  The
+    // environment's sphere-map UV is worked out here too, from the pixel's own normal.
+    "  if (gCarMisc.x != 0.0){"
+    "    float3 n = normalize(i.wn); float3 V = normalize(gCarCam.xyz - i.wp);"
+    "    float ao = i.col.r;"
+    "    float NdotL = saturate(dot(n, gCarKey.xyz)) * gCarKey.w;"
+    "    float NdotV = saturate(dot(n, V));"
+    "    float hemi = (0.32 + 0.30 * (n.y * 0.5 + 0.5)) * gCarCam.w;"
+    "    float fv = 1.0 - NdotV; float fres = fv * fv * fv * fv;"
+    "    float3 spec = 0.0;"
+    "    [unroll] for (int k = 0; k < 3; k++){ if (k < (int)gCarMisc2.x){"
+    "      float3 L = gCarSpecDir[k].xyz; float fall = 1.0;"
+    "      if (gCarSpecDir[k].w != 0.0){ float3 d = L - i.wp; float dl = max(length(d), 1e-4); L = d / dl; fall = 1.0 - saturate(dl / 25.0); }"
+    "      float ndh = dot(n, normalize(L + V));"
+    "      if (ndh > 0.0 && fall > 0.0) spec += gCarSpecCol[k].rgb * (gCarMisc.y * pow(ndh, gCarMisc.z) * fall * (dot(n, L) > 0.0 ? 1.0 : 0.3) * 1.6); } }"
+    "    if (gCarMisc2.x < 0.5) spec = gCarMisc.y * pow(saturate(dot(n, normalize(gCarKey.xyz + V))), gCarMisc.z) * (NdotL > 0.0 ? 1.0 : 0.3) * (0.5 + 0.5 * gCarKey.w);"
+    "    float3 base = gCarBase.rgb; float kd = (hemi + 0.85 * NdotL) * ao;"
+    // the paint ramp (sCarPaintRampAt): how far the surface turns from the viewer
+    "    if (gCarMisc2.y >= 2.0){ float u = sqrt(saturate(1.0 - NdotV * NdotV)); int cnt = (int)gCarMisc2.y; int j = 0;"
+    "      [unroll] for (int s = 0; s < 6; s++) if (j < cnt - 2 && u > gCarRamp[j + 1].w) j++;"
+    "      float x0 = gCarRamp[j].w, x1 = gCarRamp[j + 1].w; float t = (x1 > x0) ? saturate((u - x0) / (x1 - x0)) : 1.0;"
+    "      base = lerp(gCarRamp[j].rgb, gCarRamp[j + 1].rgb, t); kd *= 2.0; }"
+    "    float3 rv = reflect(normalize(i.vp), normalize(i.vn));"
+    "    float rm = 2.0 * sqrt(rv.x*rv.x + rv.y*rv.y + (rv.z - 1.0)*(rv.z - 1.0)); float2 sm = rv.xy / max(rm, 1e-4) + 0.5;"
+    "    uvB = float2(sm.x, 1.0 - sm.y);"
+    "    float coat = gCarMisc.w * (0.15 + 0.85 * fres);"
+    // Glass (gCarGlass.x): its alpha is its own - fresnel and highlight make a window more
+    // opaque at grazing angles and under a light - so the reflection is added here, from the
+    // same map and with sCarEnvFromProbe's gain and floor, and stage 2 is skipped below.
+    // gCarGlass.y: a lit lens washes its diffuse toward 1 (sCarShade's carLight).
+    // gCarGlass.z: the alpha added at full fresnel (car_glass_fres).
+    "    if (gCarGlass.x != 0.0){"
+    "      float3 env = min(0.10 + shaderTexture2.Sample(sampleState, uvB).rgb * 2.2, 1.0) * gCarCam.w;"
+    "      kd += (1.0 - kd) * saturate(gCarGlass.y);"
+    "      float specL = dot(spec, float3(0.3, 0.59, 0.11));"
+    "      vc = float4(saturate(base * kd + env * coat + spec * (0.5 + 0.5 * ao)), saturate(gCarBase.a + gCarGlass.z * fres + 0.6 * specL));"
+    "    } else vc = float4(saturate(base * kd + spec * (0.5 + 0.5 * ao)), coat);"
+    // -carshadedebug 1: the pixel's world normal as colour; 2: its occlusion
+    "    if (gCarMisc2.z == 1.0) return float4(n * 0.5 + 0.5, 1.0);"
+    "    if (gCarMisc2.z == 2.0) return float4(ao, ao, ao, 1.0);"
+    "  }"
     "  if (gTexMisc.w > 0.0) vc.rgb = min(vc.rgb * gTexMisc.w, gTexMisc.w);"
     "  if (gTexGen.z > 0.0) vc.a = min(vc.a * gTexGen.z, gTexGen.z);"
     "  float4 t0 = shaderTexture.Sample(sampleState, uvA); float4 c = vc * t0;"
     // Stage 2 (gTexMisc.z = 1 + colour op, 0 = unbound): modulate / decal
     // (lerp by the stage-2 alpha) / keep the stage-1 result / take the
     // stage-2 colour; gTexGen.w = alpha op: modulate / keep / take.
-    "  if (gTexMisc.z >= 1.0){ float4 t2 = shaderTexture2.Sample(sampleState, uvB); float4 c0 = c;"
+    "  if (gTexMisc.z >= 1.0 && gCarGlass.x == 0.0){ float4 t2 = shaderTexture2.Sample(sampleState, uvB); float4 c0 = c;"
     "    if (gTexMisc.z < 1.5) c.rgb *= t2.rgb;"
     "    else if (gTexMisc.z < 2.5) c.rgb = lerp(c.rgb, t2.rgb, t2.a);"
     "    else if (gTexMisc.z < 3.5) c.rgb = c0.rgb;"
@@ -477,7 +529,7 @@ extern "C" void gfxOpenDevice(void *hwnd, int w, int h) {
   sDevice->CreateBuffer(&vb, NULL, &sVB);
 
   D3D11_BUFFER_DESC cb = {};
-  cb.ByteWidth = sizeof(XMMATRIX) * 5 + 16 * 14; // gMVP..gTexGen + gTexMtx2
+  cb.ByteWidth = sizeof(XMMATRIX) * 5 + 16 * 14 + sizeof(vglCarShadeParams); // gMVP..gTexGen + gTexMtx2 + gCar*
   cb.Usage = D3D11_USAGE_DYNAMIC;
   cb.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
   cb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -1721,10 +1773,11 @@ static UINT8 EffectiveColorMask() {
 
 // The alpha slots take no colour-based factor: D3D11 rejects SRC_COLOR / DEST_COLOR and their
 // inverses in SrcBlendAlpha / DestBlendAlpha outright.  The PS2 blend sets draw no such
-// distinction, so a multiply (blendSet_DestColor_Zero) handed DEST_COLOR to both slots,
-// CreateBlendState failed, and the NULL state that came back read as "no blending" - the draw
-// landed opaque while the state log still reported the set as live.  Fold each colour factor
-// onto its matching alpha channel.
+// distinction, so a multiply (blendSet_DestColor_Zero, or SetSrcBlend(blendZero) +
+// SetDestBlend(blendSrcColor)) handed a colour factor to an alpha slot, CreateBlendState failed,
+// and the NULL state that came back read as "no blending" - the draw landed fully opaque while
+// the state log still reported the blend as live.  Fold each colour factor onto its matching
+// alpha channel.
 static D3D11_BLEND AlphaSlot(D3D11_BLEND b) {
   switch (b) {
   case D3D11_BLEND_SRC_COLOR: return D3D11_BLEND_SRC_ALPHA;
@@ -2096,6 +2149,9 @@ static void FlushLines() {
     float texGen[4] = {sNoTexMtx ? 0.0f : (float)sTexGen[0], sNoTexMtx ? 0.0f : (float)sTexGen[1], alphaScale, (float)sTex2AlphaOp};
     memcpy(q + 272, texGen, 16);
     memcpy(q + 288, &sTexMtx2, 64);
+    // gCarMisc..gCarRamp (vglSetCarShade): zero = off
+    if (sCarShadeOn && !orthoBatch) memcpy(q + 352, &sCarShade, sizeof(sCarShade));
+    else memset(q + 352, 0, sizeof(sCarShade));
   }
   sCtx->Unmap(sCB, 0);
 
@@ -2258,6 +2314,11 @@ void vglBegin(EnumDrawType prim, int vertexCount) {
 void vglVertex3f(const Vector3 &v) { rglVertex3f(v.x, v.y, v.z); }
 void vglVertex3f(float x, float y, float z) { rglVertex3f(x, y, z); }
 void vglEnd() { FlushLines(); }
+
+void vglSetCarShade(const vglCarShadeParams *params) {
+  sCarShadeOn = params != NULL;
+  if (params) sCarShade = *params;
+}
 
 // Camera-facing quad: spans the camera's right/up axes so it always faces
 // the viewer, in the current world space (rain splashes, sparks).

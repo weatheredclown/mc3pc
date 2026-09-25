@@ -124,6 +124,30 @@ enum EnumTex2AlphaOp { tex2alphaModulate = 0, tex2alphaCurrent = 1, tex2alphaTex
 void vglTex2CombineOps(int colorOp, int alphaOp);
 class gfxTexture *vglGetTexture2();
 inline void rglBindTexture2(class gfxTexture *tex) { vglBindTexture2(tex); }
+// PC PORT: per-pixel car bodywork (gfx/model.cpp sCarShade, evaluated in the pixel
+// shader).  The consoles drew carpaint through textures sampled per pixel - the paint
+// ramp through reflection texgen and a specular map holding one sprite per light
+// (mcCarMetallicPaint::GenSpecular) - so its gradients and highlights never depended
+// on the long panel triangles.  While set, the vertex colour carries only the baked
+// occlusion (rgb) and the shader works out the ramp, diffuse, highlights and fresnel
+// per pixel, leaving the reflection weight in the vertex-colour alpha for
+// tex2colAddByVertexAlpha, whose environment lookup then also moves per pixel.
+// All vectors are world space.  NULL turns it off.
+struct vglCarShadeParams {
+    float misc[4];          // enable (1), spec strength, gloss exponent, reflectivity
+    float base[4];          // base colour rgb (no ramp), base alpha
+    float cam[4];           // camera position, ambient / environment scale
+    float key[4];           // direction towards the key light, key scale
+    float misc2[4];         // highlight light count, ramp stop count (< 2: none), debug view (-carshadedebug: 1 normals, 2 occlusion), unused
+    float specDir[3][4];    // towards the light (w 0) or its position (w 1)
+    float specCol[3][4];    // highlight colour rgb
+    float ramp[8][4];       // paint ramp stops: rgb, position 0..1
+    // Glass (1) takes the stage-2 environment itself and writes its own alpha (fresnel
+    // + highlight) instead of the reflection weight; lens light level 0..1; the alpha
+    // added at full fresnel (car_glass_fres); unused.
+    float glass[4];
+};
+void vglSetCarShade(const vglCarShadeParams *params);
 inline void rglColor(gfxPackedColor c) { vglColor(c); }
 
 ////////////////////////////////////////////////////////////////////////////

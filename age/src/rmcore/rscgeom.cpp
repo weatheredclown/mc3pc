@@ -217,7 +217,15 @@ bool rscDecodeVifStream(const datResourceImage &image, u32 dataAddr, u32 endAddr
 				}
 			} else if (bits == 8 && (vn == 4 || vn == 3) && (addr == 0x118 || addr == 0x245)) {
 				// Pure vertex normal stream: decode into cur.normals, do not touch cur.adc.
-				cur.normals.Reset();
+				// An UNSIGNED unpack here is not a normal at all: the vehicle packs put their
+				// vertex colour at 0x118 / 0x245 (rgb 0x80 = 1.0, then the CPV index) and the
+				// signed normals in the NrmAdc stream at 0x9a / 0x1c7 that follows it.  Read as
+				// signed bytes, 0x7f / 0x80 / 0x81 became (+-1, +-1, +-1) / sqrt(3), whose signs
+				// flipped with the baked colour - and, filling cur.normals first, they stopped
+				// the real NrmAdc normals being read.  Every vehicle normal was one of eight
+				// diagonals, which is what made the bodywork look faceted and blotchy.
+				const bool colourStream = ((imm >> 14) & 1) != 0;
+				if (!colourStream) cur.normals.Reset();
 				if (vn == 4 && rmcCpvPalette::HasCurrent()) {
 					cur.colors.Reset();
 					const rmcCpvPalette &pal = rmcCpvPalette::GetCurrent();
@@ -227,7 +235,7 @@ bool rscDecodeVifStream(const datResourceImage &image, u32 dataAddr, u32 endAddr
 						cur.colors.Append(pal.GetPackedColor(cpvIdx));
 					}
 				}
-				for (int i = 0; i < count; i++) {
+				for (int i = 0; i < count && !colourStream; i++) {
 					u32 p = o + (u32)i * vn;
 					s8 bx = (s8)image.ReadU8(p), by = (s8)image.ReadU8(p + 1), bz = (s8)image.ReadU8(p + 2);
 					float nx = (float)bx / 127.0f, ny = (float)by / 127.0f, nz = (float)bz / 127.0f;
@@ -1920,7 +1928,11 @@ void rscClassifyCarMaterial(gfxModelMaterial &mat, const char *t, const char *tn
 		mat.car_paint = true;
 		sCarShading(mat, 0.9f, 64.0f, 0.35f);
 	} else if (strstr(t, "car_window")) {
-		mat.car_color = sRgba(28, 36, 46, 150);
+		// Opacity 0.2 face-on up to 0.9 at grazing angles, drwShaderCarWindows'
+		// WinFresnelMin / WinFresnelMax: the cabin shows through, as on the console.
+		// A flat 0.59 floor hid it outright - the interior is barely darker than the tint.
+		mat.car_color = sRgba(28, 36, 46, 51);
+		mat.car_glass_fres = 0.7f;
 		mat.car_blend = true;
 		sCarShading(mat, 1.2f, 96.0f, 0.6f, false, false, true);
 	} else if (strstr(t, "colored_glass") || strstr(t, "glass")) {

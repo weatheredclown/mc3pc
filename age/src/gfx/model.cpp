@@ -1811,8 +1811,51 @@ static gfxPackedColor sCarShade(const Vector3 &p, const Vector3 &n, float ao, co
     // there as a permanent white panel.  The tail/brake/reverse shaders use
     // mkfrgb and stay opaque, so they keep their own alpha.
     if (m.car_light == CAR_LIGHT_HEAD) alpha = sClamp01(e.carLight);
-    if (m.car_glass) alpha = sClamp01(alpha + 0.45f * fres + 0.6f * spec);
+    if (m.car_glass) alpha = sClamp01(alpha + m.car_glass_fres * fres + 0.6f * spec);
     return mkrgba((u8)(sClamp01(r) * 255.0f), (u8)(sClamp01(g) * 255.0f), (u8)(sClamp01(b) * 255.0f), (u8)(alpha * 255.0f));
+}
+
+// The vertex colour of a per-pixel car packet: its occlusion, nothing else.
+static inline gfxPackedColor sCarAoColor(float ao) {
+    const u8 v = (u8)(sClamp01(ao) * 255.0f);
+    return mkrgba(v, v, v, 255);
+}
+
+// sCarShade's inputs for the pixel shader (vglCarShadeParams): the same material and
+// light terms, so a packet looks as it did per vertex, only resolved per pixel.
+static void sCarShadeParamsFor(const gfxModelMaterial &m, const sCarShadeEnv &e, vglCarShadeParams &p) {
+    memset(&p, 0, sizeof(p));
+    const u32 c = m.car_color;
+    p.misc[0] = 1.0f;
+    p.misc[1] = m.car_spec;
+    p.misc[2] = m.car_gloss;
+    p.misc[3] = m.car_reflect;
+    p.base[0] = ((c >> 16) & 0xff) / 255.0f;
+    p.base[1] = ((c >> 8) & 0xff) / 255.0f;
+    p.base[2] = (c & 0xff) / 255.0f;
+    p.base[3] = ((c >> 24) & 0xff) / 255.0f;
+    p.cam[0] = e.camPos.x; p.cam[1] = e.camPos.y; p.cam[2] = e.camPos.z; p.cam[3] = e.ambScale;
+    p.key[0] = e.lightDir.x; p.key[1] = e.lightDir.y; p.key[2] = e.lightDir.z; p.key[3] = e.keyScale;
+    const int nSpec = e.numSpecLights < 3 ? e.numSpecLights : 3;
+    p.misc2[0] = (float)nSpec;
+    static int sDebug = -1;
+    if (sDebug < 0) { const char *d = NULL; sDebug = (ARGS.Get("carshadedebug", 0, &d) && d) ? atoi(d) : 0; }
+    p.misc2[2] = (float)sDebug;
+    for (int li = 0; li < nSpec; li++) {
+        const sCarShadeEnv::SpecLight &sl = e.specLights[li];
+        p.specDir[li][0] = sl.dirOrPos.x; p.specDir[li][1] = sl.dirOrPos.y; p.specDir[li][2] = sl.dirOrPos.z;
+        p.specDir[li][3] = sl.isPoint ? 1.0f : 0.0f;
+        p.specCol[li][0] = sl.color.x; p.specCol[li][1] = sl.color.y; p.specCol[li][2] = sl.color.z;
+    }
+    if (m.car_paint && e.paintRamp && e.paintRamp->count >= 2) {
+        const gfxCarPaintRamp &r = *e.paintRamp;
+        const int n = r.count < gfxCarPaintRamp::kMaxStops ? r.count : (int)gfxCarPaintRamp::kMaxStops;
+        p.misc2[1] = (float)n;
+        for (int i = 0; i < n; i++) {
+            p.ramp[i][0] = r.rgb[i][0]; p.ramp[i][1] = r.rgb[i][1]; p.ramp[i][2] = r.rgb[i][2];
+            p.ramp[i][3] = (float)r.pos[i] / 255.0f;
+        }
+    }
 }
 
 int gfxModel::GetMaxBoneIndex() const {
@@ -2162,6 +2205,32 @@ void gfxModel::Draw(Matrix44 *matrices, int pass, const atBitSet *enables, int c
         }
         vglBindTexture2(tex2map);
         vglTex2Combine(tex2mode);
+        // PC PORT: ...and the rest of sCarShade moves per pixel with it (see
+        // vglCarShadeParams): the paint ramp, the diffuse and above all the tight
+        // highlights, which per vertex smeared into wedges across the long panel
+        // triangles.  -carpervertex keeps the per-vertex shading, for A/B shots.
+        static const bool sCarPerVertex = ARGS.Get("carpervertex") != NULL;
+        bool carPerPixel = carEnv.envPerPixel && !sCarPerVertex;
+        // Glass too: its alpha (fresnel + highlight) and its reflection change fastest of
+        // all across a window, and per vertex a rear screen - a few big triangles meeting
+        // in the middle - came out as flat quadrants.  The shader samples the environment
+        // itself and keeps the alpha for the glass.  Headlight glass stays per vertex: its
+        // alpha is the light level (sCarShade, CAR_LIGHT_HEAD).
+        bool carGlass = false;
+        if (!carPerPixel && !sCarPerVertex && carMat && carMat->car_glass && !carChromeTexgen && !envMap &&
+            carMat->car_light != CAR_LIGHT_HEAD) {
+            static const bool sNoCarEnvMapGlass = ARGS.Get("nocarenvmap") != NULL;
+            if (gfxTexture *cityEnv = sNoCarEnvMapGlass ? NULL : gfxGetCityEnvProbeTexture()) {
+                vglBindTexture2(cityEnv);
+                carPerPixel = carGlass = true;
+            }
+        }
+        if (carPerPixel) {
+            vglCarShadeParams cp;
+            sCarShadeParamsFor(*carMat, carEnv, cp);
+            if (carGlass) { cp.glass[0] = 1.0f; cp.glass[1] = carEnv.carLight; cp.glass[2] = carMat->car_glass_fres; }
+            vglSetCarShade(&cp);
+        }
 
         // Skin the packet before the strips walk it.
         static atArray<Vector3> sSkinPos, sSkinNrm;
@@ -2211,7 +2280,13 @@ void gfxModel::Draw(Matrix44 *matrices, int pass, const atBitSet *enables, int c
                 Vector3 n0 = sSkinNrm[idx0];
                 Vector3 n1 = sSkinNrm[idx1];
                 Vector3 n2 = sSkinNrm[idx2];
-                if (matrices) {
+                // PC PORT: not for vehicle packs.  -nrmmode's default hands back the raw,
+                // unrotated normal because the PS2 .mod characters store theirs in model
+                // space; a car pack's NrmAdc normals are bone-local like its positions
+                // (they agree with the bone-local faces at |cos| ~0.96), so the skinned
+                // normal above is already right and the raw one points the wrong way on
+                // every part a bone turns.
+                if (matrices && !carMat) {
                     uint32_t h0 = 0, h1 = 0, h2 = 0;
                     if (adj0.bone_idx < (u32)packet.bone_map.GetCount()) h0 = packet.bone_map[adj0.bone_idx];
                     if (adj1.bone_idx < (u32)packet.bone_map.GetCount()) h1 = packet.bone_map[adj1.bone_idx];
@@ -2251,9 +2326,14 @@ void gfxModel::Draw(Matrix44 *matrices, int pass, const atBitSet *enables, int c
                         W.Transform3x3(n0, wn0); W.Transform3x3(n1, wn1); W.Transform3x3(n2, wn2);
                     }
                     wn0.Normalize(); wn1.Normalize(); wn2.Normalize();
-                    c0 = sCarShade(wp0, wn0, sCarAo(c0), *carMat, carEnv);
-                    c1 = sCarShade(wp1, wn1, sCarAo(c1), *carMat, carEnv);
-                    c2 = sCarShade(wp2, wn2, sCarAo(c2), *carMat, carEnv);
+                    if (carPerPixel) {
+                        // the pixel shader lights it: the vertex brings the occlusion only
+                        c0 = sCarAoColor(sCarAo(c0)); c1 = sCarAoColor(sCarAo(c1)); c2 = sCarAoColor(sCarAo(c2));
+                    } else {
+                        c0 = sCarShade(wp0, wn0, sCarAo(c0), *carMat, carEnv);
+                        c1 = sCarShade(wp1, wn1, sCarAo(c1), *carMat, carEnv);
+                        c2 = sCarShade(wp2, wn2, sCarAo(c2), *carMat, carEnv);
+                    }
                 }
 
                 float u0 = 0.0f, v0 = 0.0f;
@@ -2287,6 +2367,7 @@ void gfxModel::Draw(Matrix44 *matrices, int pass, const atBitSet *enables, int c
         }
 
         vglEnd();
+        if (carPerPixel) vglSetCarShade(NULL);
         if (didBillboard) RSTATE.SetWorld(savedWorld);
         if (carChromeTexgen) RSTATE.SetTexGeneration(0, 0, false, 0, 0);
         if (carMat && carMat->car_blend) RSTATE.SetZWriteEnable(callerZWrite);
