@@ -1,6 +1,6 @@
 @echo off
 rem Builds bin\rscview.exe with the newest Visual Studio that has the x64 C++ tools.
-rem   build.bat [/clean] [/release | /analyze]
+rem   build.bat [/clean] [/release] [/includes]
 setlocal
 set "HERE=%~dp0"
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -14,10 +14,9 @@ set ARGS=
 if "%~1"=="" goto run
 if /i "%~1"=="/clean" set ARGS=%ARGS% -Clean
 if /i "%~1"=="/release" set ARGS=%ARGS% -Release
-if /i "%~1"=="/analyze" set ARGS=%ARGS% -Analyze
 if /i "%~1"=="/includes" set ARGS=%ARGS% -Includes
 shift
 goto args
 :run
-powershell -NoProfile -ExecutionPolicy Bypass -File "%HERE%tools\build.ps1" %ARGS%
+powershell -NoProfile -ExecutionPolicy Bypass -File "%HERE%build.ps1" %ARGS%
 exit /b %ERRORLEVEL%

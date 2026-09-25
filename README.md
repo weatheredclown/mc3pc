@@ -98,5 +98,5 @@ The build fixes the configuration: `__WIN32PC`/`__D3D` on, every console off, `_
 The roots keep their original names because includes use them: `#include "gfx/rgl.h"`
 resolves against `age/src`, and `mcgfx/...` against `mc3/src`.
 
-`sources.txt` is the build: `tools/build.ps1` compiles each line in it and links
+`sources.txt` is the build: `build.ps1` compiles each line in it and links
 `bin\rscview.exe`. There is no other project file.
